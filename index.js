@@ -51,13 +51,13 @@ async function run() {
         const verifyToken = (req, res, next) => {
             // console.log(req.headers.authorization);
             if (!req.headers.authorization) {
-                return res.status(401).send({ message: "Forbidden access" });
+                return res.status(401).send({ message: "Unauthorized" });
             }
             const token = req.headers.authorization.split(" ")[1];
             jwt.verify(token, process.env.ACCESS_TOKEN, (error, decoded) => {
                 if (error) {
                     return res
-                        .status(401)
+                        .status(403)
                         .send({ message: "Forbidden access" });
                 }
                 req.decoded = decoded;
@@ -249,6 +249,79 @@ async function run() {
             const deleteResult = await cartCollection.deleteMany(query);
 
             res.send({ paymentResult, deleteResult });
+        });
+
+        // Stats or analytics
+        app.get("/admin-stats", verifyToken, verifyAdmin, async (req, res) => {
+            const users = await userCollection.estimatedDocumentCount();
+            const menuItems = await menuCollection.estimatedDocumentCount();
+            const orders = await paymentCollection.estimatedDocumentCount();
+
+            // Trying to calculate the revenue in bangla system (NOT THE BEST WAY)
+            // const payments = await paymentCollection.find().toArray();
+            // const revenue = payments.reduce(
+            //     (total, payment) => total + payment.price,
+            //     0
+            // );
+
+            const result = await paymentCollection
+                .aggregate([
+                    {
+                        $group: {
+                            _id: null,
+                            totalRevenue: {
+                                $sum: "$price",
+                            },
+                        },
+                    },
+                ])
+                .toArray();
+
+            const revenue = result.length > 0 ? result[0].totalRevenue : 0;
+
+            res.send({ users, menuItems, orders, revenue });
+        });
+
+        // Using aggregate pipeline
+        app.get("/order-stats", verifyToken, verifyAdmin, async (req, res) => {
+            const result = await paymentCollection
+                .aggregate([
+                    {
+                        $unwind: "$menuItemId",
+                    },
+                    {
+                        $lookup: {
+                            from: "menu",
+                            localField: "menuItemId",
+                            foreignField: "_id",
+                            as: "menuItems",
+                        },
+                    },
+                    {
+                        $unwind: "$menuItems",
+                    },
+                    {
+                        $group: {
+                            _id: "$menuItems.category",
+                            quantity: {
+                                $sum: 1,
+                            },
+                            totalRevenue: {
+                                $sum: "$menuItems.price",
+                            },
+                        },
+                    },
+                    {
+                        $project: {
+                            _id: 0,
+                            category: "$_id",
+                            quantity: "$quantity",
+                            revenue: "$revenue",
+                        },
+                    },
+                ])
+                .toArray();
+            res.send(result);
         });
     } finally {
     }
